@@ -1,25 +1,44 @@
+"""Retrieval behind two authorization checks: a pre-filter on the index and a live re-check.
+
+The index holds a copy of every document's ACL taken when it was last synced,
+and the caller's groups come from a session token. Both can be stale. So the
+index copy only decides what may be *ranked*; before anything enters the
+context, each candidate is checked again against the authority (the document
+system and directory of record). If the authority cannot answer, the candidate
+is dropped: the service fails closed.
+"""
+
 from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from typing import Protocol
 
-from .models import AccessContext, AuditEvent, Chunk, Document, QueryResult, RetrievalHit
+from .models import AccessContext, AuditEvent, Chunk, Document, QueryResult, RetrievalHit, authorized
 from .retrieval import HybridRetriever
 from .store import InMemoryStore
 
 
-def _authorized(chunk: Chunk, context: AccessContext) -> bool:
-    if chunk.tenant_id != context.tenant_id:
-        return False
-    return (
-        not chunk.allowed_users
-        and not chunk.allowed_groups
-        or context.user_id in chunk.allowed_users
-        or bool(context.groups & chunk.allowed_groups)
-    )
+class Authority(Protocol):
+    def document(self, document_id: str) -> Document | None: ...
+
+    def groups(self, tenant_id: str, user_id: str) -> frozenset[str] | None: ...
 
 
-def _chunk(document: Document, max_chars: int = 420, overlap: int = 60) -> list[Chunk]:
+class StoreAuthority:
+    """Default authority: the store's current documents, and the caller's groups as given."""
+
+    def __init__(self, store: InMemoryStore) -> None:
+        self.store = store
+
+    def document(self, document_id: str) -> Document | None:
+        return self.store.get_document(document_id)
+
+    def groups(self, tenant_id: str, user_id: str) -> frozenset[str] | None:
+        return None  # unknown: trust the session's groups
+
+
+def chunk_document(document: Document, max_chars: int = 420, overlap: int = 60) -> list[Chunk]:
     if max_chars <= overlap:
         raise ValueError("max_chars must be greater than overlap")
     paragraphs = [part.strip() for part in document.text.split("\n") if part.strip()]
@@ -54,66 +73,63 @@ class SecureRAGService:
         store: InMemoryStore | None = None,
         retriever: HybridRetriever | None = None,
         generator: Callable[[str, list[RetrievalHit]], str] | None = None,
+        authority: Authority | None = None,
+        overfetch: int = 3,
     ) -> None:
         self.store = store or InMemoryStore()
         self.retriever = retriever or HybridRetriever()
         self.generator = generator or self._citation_first_answer
+        self.authority = authority or StoreAuthority(self.store)
+        self.overfetch = overfetch
 
     def ingest(self, document: Document) -> None:
-        self.store.upsert_document(document, _chunk(document))
+        self.store.upsert_document(document, chunk_document(document))
+
+    def live_check(self, chunk: Chunk, context: AccessContext) -> bool:
+        try:
+            latest = self.authority.document(chunk.document_id)
+            live_groups = self.authority.groups(context.tenant_id, context.user_id)
+        except Exception:
+            return False  # the authority is unavailable: fail closed
+        if latest is None:
+            return False  # deleted at the source
+        if live_groups is not None:  # the directory's current groups override the session token's
+            context = AccessContext(context.user_id, context.tenant_id, live_groups)
+        return authorized(latest.tenant_id, latest.allowed_users, latest.allowed_groups, context)
 
     def query(self, query: str, context: AccessContext, top_k: int = 4) -> QueryResult:
         trace_id = uuid.uuid4().hex
-        all_chunks = self.store.all_chunks()
-        # Snapshot pre-filter keeps unauthorized text out of the retriever/model boundary.
-        visible = [chunk for chunk in all_chunks if _authorized(chunk, context)]
-        candidates = self.retriever.search(query, visible, top_k=max(top_k * 2, top_k))
-        # Real-time post-filter fails closed if permissions changed after the snapshot.
+        # 1. Pre-filter on the index's ACL copy, so unauthorized text is never ranked.
+        visible = [
+            c for c in self.store.all_chunks() if authorized(c.tenant_id, c.allowed_users, c.allowed_groups, context)
+        ]
+        candidates = self.retriever.search(query, visible, top_k=top_k * self.overfetch)
+        # 2. Live re-check before context assembly; refill from further down the candidate list.
         allowed: list[RetrievalHit] = []
         denied: set[str] = set()
         for hit in candidates:
-            latest = self.store.get_document(hit.chunk.document_id)
-            if latest is None:
-                denied.add(hit.chunk.document_id)
-                continue
-            latest_chunk = Chunk(
-                id=hit.chunk.id,
-                document_id=latest.id,
-                tenant_id=latest.tenant_id,
-                title=latest.title,
-                text=hit.chunk.text,
-                allowed_users=latest.allowed_users,
-                allowed_groups=latest.allowed_groups,
-                version=latest.version,
-            )
-            if _authorized(latest_chunk, context):
+            if self.live_check(hit.chunk, context):
                 allowed.append(hit)
             else:
                 denied.add(hit.chunk.document_id)
             if len(allowed) == top_k:
                 break
-        event = AuditEvent(
-            trace_id=trace_id,
-            user_id=context.user_id,
-            tenant_id=context.tenant_id,
-            query=query,
-            candidate_count=len(candidates),
-            returned_document_ids=tuple(dict.fromkeys(hit.chunk.document_id for hit in allowed)),
-            denied_document_ids=tuple(sorted(denied)),
+        self.store.append_audit(
+            AuditEvent(
+                trace_id=trace_id,
+                user_id=context.user_id,
+                tenant_id=context.tenant_id,
+                query=query,
+                candidate_count=len(candidates),
+                returned_document_ids=tuple(dict.fromkeys(hit.chunk.document_id for hit in allowed)),
+                denied_document_ids=tuple(sorted(denied)),
+            )
         )
-        self.store.append_audit(event)
-        return QueryResult(
-            answer=self.generator(query, allowed),
-            hits=tuple(allowed),
-            trace_id=trace_id,
-        )
+        return QueryResult(answer=self.generator(query, allowed), hits=tuple(allowed), trace_id=trace_id)
 
     @staticmethod
     def _citation_first_answer(query: str, hits: list[RetrievalHit]) -> str:
         if not hits:
             return "No authorized evidence was found."
-        evidence = " ".join(
-            f"[{hit.chunk.document_id}] {hit.chunk.text[:180]}" for hit in hits[:3]
-        )
+        evidence = " ".join(f"[{hit.chunk.document_id}] {hit.chunk.text[:180]}" for hit in hits[:3])
         return f"Question: {query}\nAuthorized evidence: {evidence}"
-

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+EVERYONE = "everyone"  # grant to every user of the tenant; an empty ACL grants nobody
 
 
 @dataclass(frozen=True)
@@ -58,5 +60,13 @@ class AuditEvent:
     candidate_count: int
     returned_document_ids: tuple[str, ...]
     denied_document_ids: tuple[str, ...]
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+def authorized(
+    tenant_id: str, allowed_users: frozenset[str], allowed_groups: frozenset[str], context: AccessContext
+) -> bool:
+    """Fail closed: same tenant, and an explicit grant to the user, one of their groups, or everyone."""
+    if tenant_id != context.tenant_id:
+        return False
+    return context.user_id in allowed_users or bool(context.groups & allowed_groups) or EVERYONE in allowed_groups

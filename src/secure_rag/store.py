@@ -25,11 +25,7 @@ class InMemoryStore:
     def delete_document(self, document_id: str) -> None:
         with self._lock:
             self._documents.pop(document_id, None)
-            self._chunks = {
-                key: value
-                for key, value in self._chunks.items()
-                if value.document_id != document_id
-            }
+            self._chunks = {key: value for key, value in self._chunks.items() if value.document_id != document_id}
 
     def all_chunks(self) -> list[Chunk]:
         with self._lock:
@@ -46,4 +42,3 @@ class InMemoryStore:
     def audit_events(self) -> tuple[AuditEvent, ...]:
         with self._lock:
             return tuple(self._audit)
-

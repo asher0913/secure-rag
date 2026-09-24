@@ -1,0 +1,125 @@
+{
+  "corpus": {
+    "tenants": 2,
+    "users": 72,
+    "documents": 440,
+    "named_person_documents": 30
+  },
+  "changes": {
+    "users_moved_team": 13,
+    "documents_restricted": 37,
+    "documents_deleted": 18
+  },
+  "scenarios": {
+    "in sync": {
+      "queries": 648,
+      "by_kind": {
+        "specific": 288,
+        "broad": 144,
+        "probe": 216
+      },
+      "designs": {
+        "no filter": {
+          "recall_at_4": 1.0,
+          "mrr": 0.868,
+          "broad_questions_answered_pct": 20.1,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 98.1,
+          "cross_tenant_leak_pct": 89.0,
+          "forbidden_chunks_per_100_queries": 289.0
+        },
+        "post-filter": {
+          "recall_at_4": 1.0,
+          "mrr": 0.947,
+          "broad_questions_answered_pct": 20.1,
+          "empty_context_pct": 25.2,
+          "queries_with_a_leak_pct": 0.0,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 0.0
+        },
+        "post-filter, 4x over-fetch": {
+          "recall_at_4": 1.0,
+          "mrr": 0.947,
+          "broad_questions_answered_pct": 81.2,
+          "empty_context_pct": 4.4,
+          "queries_with_a_leak_pct": 0.0,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 0.0
+        },
+        "pre-filter on index ACLs": {
+          "recall_at_4": 1.0,
+          "mrr": 0.953,
+          "broad_questions_answered_pct": 100.0,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 0.0,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 0.0
+        },
+        "pre-filter + live re-check": {
+          "recall_at_4": 1.0,
+          "mrr": 0.953,
+          "broad_questions_answered_pct": 100.0,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 0.0,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 0.0
+        }
+      }
+    },
+    "after changes, before the next sync": {
+      "queries": 634,
+      "by_kind": {
+        "specific": 288,
+        "broad": 144,
+        "probe": 202
+      },
+      "designs": {
+        "no filter": {
+          "recall_at_4": 0.997,
+          "mrr": 0.903,
+          "broad_questions_answered_pct": 25.0,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 97.6,
+          "cross_tenant_leak_pct": 85.6,
+          "forbidden_chunks_per_100_queries": 277.4
+        },
+        "post-filter": {
+          "recall_at_4": 0.882,
+          "mrr": 0.852,
+          "broad_questions_answered_pct": 20.8,
+          "empty_context_pct": 31.7,
+          "queries_with_a_leak_pct": 35.5,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 45.6
+        },
+        "post-filter, 4x over-fetch": {
+          "recall_at_4": 0.885,
+          "mrr": 0.855,
+          "broad_questions_answered_pct": 75.0,
+          "empty_context_pct": 9.0,
+          "queries_with_a_leak_pct": 45.1,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 73.0
+        },
+        "pre-filter on index ACLs": {
+          "recall_at_4": 0.885,
+          "mrr": 0.855,
+          "broad_questions_answered_pct": 99.3,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 54.1,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 91.5
+        },
+        "pre-filter + live re-check": {
+          "recall_at_4": 0.885,
+          "mrr": 0.857,
+          "broad_questions_answered_pct": 100.0,
+          "empty_context_pct": 0.0,
+          "queries_with_a_leak_pct": 0.0,
+          "cross_tenant_leak_pct": 0.0,
+          "forbidden_chunks_per_100_queries": 0.0
+        }
+      }
+    }
+  }
+}

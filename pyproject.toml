@@ -1,32 +1,32 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "secure-rag-service"
-version = "0.1.0"
-description = "Authorization-aware hybrid retrieval for enterprise RAG"
+version = "1.0.0"
+description = "Permission-aware retrieval for multi-tenant RAG: fail-closed ACLs, pre-filtered ranking with per-view statistics, a live re-check against the directory of record, and audit events, with a benchmark of five enforcement designs."
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = ["fastapi>=0.115,<1", "pydantic>=2.9,<3", "uvicorn>=0.30,<1"]
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Yixuan Zhang"}]
+dependencies = ["fastapi>=0.110", "pydantic>=2.6", "uvicorn>=0.29"]
 
 [project.optional-dependencies]
-dev = ["httpx>=0.27,<1", "pytest>=8.3,<9", "ruff>=0.8,<1"]
+dev = ["httpx>=0.27", "pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
-secure-rag-demo = "secure_rag.cli:main"
+secure-rag = "secure_rag.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
-target-version = "py311"
+line-length = 120
+target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-
+select = ["E", "F", "I", "B", "UP"]

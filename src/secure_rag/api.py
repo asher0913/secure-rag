@@ -27,7 +27,7 @@ class QueryRequest(BaseModel):
 
 def create_app(service: SecureRAGService | None = None) -> FastAPI:
     service = service or SecureRAGService()
-    app = FastAPI(title="SecureRAG", version="0.1.0")
+    app = FastAPI(title="SecureRAG", version="1.0.0")
 
     @app.post("/v1/documents")
     def ingest(request: IngestRequest) -> dict[str, str]:
@@ -76,4 +76,3 @@ def create_app(service: SecureRAGService | None = None) -> FastAPI:
 
 
 app = create_app()
-
