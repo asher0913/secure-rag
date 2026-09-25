@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secure-rag-service"
-version = "1.0.0"
+version = "1.1.0"
 description = "Permission-aware retrieval for multi-tenant RAG: fail-closed ACLs, pre-filtered ranking with per-view statistics, a live re-check against the directory of record, and audit events, with a benchmark of five enforcement designs."
 readme = "README.md"
 requires-python = ">=3.10"

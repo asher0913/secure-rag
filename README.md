@@ -103,6 +103,7 @@ there to show the leak rate, not as a retrieval baseline.
 | Both design tables | seeded synthetic corpus (2 tenants, 72 users, 440 documents), leakage judged against the directory of record | `results/benchmark.json` | Yes: must match exactly |
 | ACLs fail closed; unauthorized text never ranked; revocation, deletion and team moves enforced | unit tests | `tests/` (12 tests) | Yes, on every push |
 | Scores unchanged when another tenant adds documents | unit test | `tests/` | Yes |
+| HTTP identity, roles, tenant isolation and stale-text withholding | API tests with a TestClient | `tests/test_api_security.py`, `tests/test_secure_rag.py` | Yes |
 
 ## Design trade-offs
 
@@ -121,7 +122,8 @@ there to show the leak rate, not as a retrieval baseline.
 | `src/secure_rag/models.py` | `authorized()`, the fail-closed ACL rule; `AccessContext`, `Document` |
 | `src/secure_rag/retrieval.py` | `HybridRetriever.search`: BM25 + hashed embeddings over the authorized chunks only |
 | `src/secure_rag/benchmark.py` | the seeded world, the permission changes and the five designs (`_run_design`) |
-| `src/secure_rag/api.py` | FastAPI endpoints for ingest, query and audit |
+| `src/secure_rag/api.py` | FastAPI endpoints: identity from the token, groups from the directory, role checks |
+| `src/secure_rag/auth.py` | `TokenSigner.issue`/`verify`: HMAC-SHA256 bearer tokens with expiry |
 
 ## Usage
 
@@ -130,7 +132,11 @@ pip install -e '.[dev]'
 
 secure-rag demo                                 # two documents, one engineer, the audit record
 secure-rag benchmark --out results/benchmark.json
-uvicorn secure_rag.api:app                      # POST /v1/documents, POST /v1/query, GET /v1/audit
+export SECURE_RAG_TOKEN_SECRET=$(python -c "import secrets; print(secrets.token_hex(32))")
+uvicorn secure_rag.api:create_app --factory       # POST /v1/documents, POST /v1/query, GET /v1/audit
+TOKEN=$(secure-rag token --user wendy --tenant acme --roles writer,reader)
+curl -s localhost:8000/v1/query -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query": "checkout latency"}'
 ```
 
 ```python
@@ -144,7 +150,7 @@ result = service.query("checkout latency", AccessContext("alice", "acme", frozen
 
 ## Tests
 
-`pytest -q` runs 12 tests:
+`pytest -q` runs 21 tests, including the API security tests described above:
 
 - ACLs fail closed;
 - the retriever never receives unauthorized chunks;
@@ -166,19 +172,34 @@ result = service.query("checkout latency", AccessContext("alice", "acme", frozen
 - Chunk text is trusted once authorized. Prompt injection inside authorized documents is out of
   scope.
 
-## Known issues
+## HTTP API security
 
-The retrieval core above is what the benchmark measures. The HTTP layer is a demo and is not yet
-safe to expose:
+The service's `query()` takes an `AccessContext` built by the caller. The HTTP layer builds that
+context from sources the client cannot forge:
 
-- **Identity is taken from the request body.** `POST /v1/query` trusts the `user_id`, `tenant_id`
-  and `groups` the client sends. In production they must come from a verified session token.
-  The benchmark and the service's `query()` already take an `AccessContext` built by the caller.
-- **The write and audit endpoints have no access control.** Anyone who can reach the service can
-  ingest documents or read every tenant's audit log.
-- **The live re-check compares ACLs and existence, not content.** A document that was edited
-  after indexing passes the re-check with its old text, because document versions are not
-  compared.
+- **Identity from a signed bearer token.** `Authorization: Bearer <token>` carries the user, the
+  tenant, the roles and an expiry, signed with HMAC-SHA256 (`auth.py`). A missing, forged,
+  spliced or expired token gets 401. A query body that tries to name a `user_id`, `tenant_id` or
+  `groups` is rejected with 422.
+- **Groups from the directory, on every request.** Groups are not in the token. They are looked
+  up in the directory each time, so a team move revokes access without waiting for tokens to
+  expire. If the directory is down, the API answers 503 rather than guess.
+- **Roles on every endpoint.** `reader` may query, `writer` may ingest into the caller's own
+  tenant, and `auditor` may read the audit log of the caller's own tenant. A writer cannot
+  overwrite a document id owned by another tenant, and the server, not the client, assigns
+  document versions.
+- **Stale text is never served.** The live re-check also requires the indexed chunk's text to
+  still exist in the source's current version, so text redacted at the source is withheld even
+  before the index re-syncs, with or without a version bump.
+
+`tests/test_api_security.py` covers each of these: missing, forged, spliced and expired tokens;
+impersonation through the body; cross-tenant reads and overwrites; role checks; tenant-scoped
+audit; revocation through the directory; server-assigned versions; an unavailable directory;
+and refusing to start without a secret. `tests/test_secure_rag.py` covers redacted text in a stale
+index and a document id reused by another tenant.
+
+The token format stands in for an identity provider's JWTs. The directory stands in for SCIM or
+LDAP, and is the in-memory `StoreAuthority(store, memberships)` in the demo.
 
 ## License
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Protocol
 
 from .models import AccessContext, AuditEvent, Chunk, Document, QueryResult, RetrievalHit, authorized
@@ -26,16 +27,25 @@ class Authority(Protocol):
 
 
 class StoreAuthority:
-    """Default authority: the store's current documents, and the caller's groups as given."""
+    """Default authority: the store's current documents, plus an optional group directory.
 
-    def __init__(self, store: InMemoryStore) -> None:
+    Without ``memberships`` the directory is unknown and the caller's groups are used as given,
+    which is only acceptable when the caller built the context from a trusted source. With
+    ``memberships`` (tenant, user) -> groups, the directory is authoritative and a user it does
+    not list has no groups.
+    """
+
+    def __init__(self, store: InMemoryStore, memberships: dict[tuple[str, str], frozenset[str]] | None = None):
         self.store = store
+        self.memberships = memberships
 
     def document(self, document_id: str) -> Document | None:
         return self.store.get_document(document_id)
 
     def groups(self, tenant_id: str, user_id: str) -> frozenset[str] | None:
-        return None  # unknown: trust the session's groups
+        if self.memberships is None:
+            return None  # unknown: trust the session's groups
+        return self.memberships.get((tenant_id, user_id), frozenset())
 
 
 def chunk_document(document: Document, max_chars: int = 420, overlap: int = 60) -> list[Chunk]:
@@ -67,6 +77,11 @@ def chunk_document(document: Document, max_chars: int = 420, overlap: int = 60) 
     ]
 
 
+@lru_cache(maxsize=4096)
+def _current_chunk_texts(document: Document) -> frozenset[str]:
+    return frozenset(chunk.text for chunk in chunk_document(document))
+
+
 class SecureRAGService:
     def __init__(
         self,
@@ -86,6 +101,14 @@ class SecureRAGService:
         self.store.upsert_document(document, chunk_document(document))
 
     def live_check(self, chunk: Chunk, context: AccessContext) -> bool:
+        """Re-check one candidate against the authority. Every failure mode denies.
+
+        - the authority is unreachable, or the document was deleted at the source;
+        - the user's current groups (from the directory, not the session) do not grant access;
+        - the indexed text is stale: the source's current version no longer contains this chunk's
+          text, whether or not the version number was bumped. Text removed from a document (for
+          example, a redacted secret) is never served from an index that has not caught up.
+        """
         try:
             latest = self.authority.document(chunk.document_id)
             live_groups = self.authority.groups(context.tenant_id, context.user_id)
@@ -95,7 +118,11 @@ class SecureRAGService:
             return False  # deleted at the source
         if live_groups is not None:  # the directory's current groups override the session token's
             context = AccessContext(context.user_id, context.tenant_id, live_groups)
-        return authorized(latest.tenant_id, latest.allowed_users, latest.allowed_groups, context)
+        if not authorized(latest.tenant_id, latest.allowed_users, latest.allowed_groups, context):
+            return False
+        if latest.tenant_id != chunk.tenant_id:
+            return False  # a document id reused by another tenant
+        return chunk.text in _current_chunk_texts(latest)
 
     def query(self, query: str, context: AccessContext, top_k: int = 4) -> QueryResult:
         trace_id = uuid.uuid4().hex

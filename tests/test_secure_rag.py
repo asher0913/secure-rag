@@ -1,7 +1,6 @@
 import json
+from dataclasses import replace
 from pathlib import Path
-
-import pytest
 
 from secure_rag import EVERYONE, AccessContext, Document, SecureRAGService, authorized
 from secure_rag.evaluation import EvalCase, evaluate
@@ -131,23 +130,32 @@ def test_benchmark_headline():
     assert all(d["cross_tenant_leak_pct"] == 0 for name, d in stale.items() if name != "no filter")
 
 
-@pytest.mark.parametrize("path", ["/v1/documents", "/v1/query", "/v1/audit"])
-def test_api_routes_exist(path):
-    from secure_rag.api import create_app
+def test_stale_index_never_serves_text_removed_at_the_source():
+    secret = Document("keys", "acme", "Rotation notes", "Rotate the checkout database password hunter2 tonight.",
+                      allowed_groups=frozenset({"engineering"}))  # fmt: skip
+    authority = Authority([secret])
+    service = SecureRAGService(authority=authority)
+    service.ingest(secret)
 
-    assert path in {route.path for route in create_app().routes}
+    def cited():
+        return {h.chunk.document_id for h in service.query("checkout database password", ENGINEER).hits}
+
+    assert cited() == {"keys"}
+    # The source redacts the password and bumps the version; the index has not re-synced yet.
+    authority.docs["keys"] = replace(secret, text="Rotate the checkout database password tonight.", version=2)
+    assert cited() == set()
+    # The same edit without a version bump is caught too: the check compares text, not version numbers.
+    authority.docs["keys"] = replace(secret, text="Rotate the checkout database password tonight.")
+    assert cited() == set()
+    # An ACL-only change that still grants access keeps serving the unchanged text.
+    authority.docs["keys"] = replace(secret, allowed_users=frozenset({"alice"}), version=3)
+    assert cited() == {"keys"}
 
 
-def test_api_round_trip():
-    from fastapi.testclient import TestClient
-
-    from secure_rag.api import create_app
-
-    client = TestClient(create_app())
-    client.post("/v1/documents", json={"id": "r", "tenant_id": "acme", "title": "Runbook", "text": "checkout latency",
-                                       "allowed_groups": ["engineering"]})  # fmt: skip
-    body = {"query": "checkout latency", "user_id": "alice", "tenant_id": "acme", "groups": ["engineering"]}
-    assert [c["document_id"] for c in client.post("/v1/query", json=body).json()["citations"]] == ["r"]
-    body["groups"] = ["sales"]
-    assert client.post("/v1/query", json=body).json()["citations"] == []
-    assert len(client.get("/v1/audit").json()) == 2
+def test_a_document_id_reused_by_another_tenant_is_denied():
+    doc = Document("shared-id", "acme", "Runbook", "checkout latency notes", allowed_groups=frozenset({EVERYONE}))
+    authority = Authority([doc])
+    service = SecureRAGService(authority=authority)
+    service.ingest(doc)
+    authority.docs["shared-id"] = replace(doc, tenant_id="globex")
+    assert not service.query("checkout latency", ENGINEER).hits

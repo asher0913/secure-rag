@@ -1,9 +1,10 @@
-"""secure-rag demo | benchmark"""
+"""secure-rag demo | benchmark | token"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .benchmark import run
@@ -42,9 +43,23 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("demo", help="two documents, one engineer, and the audit record")
     bench = sub.add_parser("benchmark", help="five enforcement designs, in sync and after ACL changes")
     bench.add_argument("--out", type=Path)
+    token = sub.add_parser("token", help="mint a signed bearer token for the HTTP API (uses SECURE_RAG_TOKEN_SECRET)")
+    token.add_argument("--user", required=True)
+    token.add_argument("--tenant", required=True)
+    token.add_argument("--roles", default="reader", help="comma-separated: reader, writer, auditor")
+    token.add_argument("--ttl", type=int, default=3600, help="seconds")
     args = parser.parse_args(argv)
     if args.command == "demo":
         demo()
+        return
+    if args.command == "token":
+        from .api import SECRET_ENV
+        from .auth import TokenSigner
+
+        secret = os.environ.get(SECRET_ENV)
+        if not secret:
+            parser.error(f"set {SECRET_ENV} first")
+        print(TokenSigner(secret).issue(args.user, args.tenant, args.roles.split(","), args.ttl))
         return
     result = run()
     if args.out:
