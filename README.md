@@ -14,6 +14,18 @@ session token ─► pre-filter on the index's ACL copy ─► hybrid BM25 + emb
                                                           view only                          of record, with refill    returned + denied ids
 ```
 
+## Quick start
+
+```bash
+git clone https://github.com/asher0913/secure-rag && cd secure-rag
+python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+secure-rag demo && secure-rag benchmark --out runs/benchmark.json
+```
+
+This needs Python 3.10+ and nothing else: no model download, database or GPU. `secure-rag demo`
+prints one query and its audit record. `secure-rag benchmark` reruns both tables below. CI runs the
+benchmark on every push and requires it to equal `results/benchmark.json` exactly.
+
 ## Results
 
 Where should permissions be enforced? Five designs run on the same seeded corpus: two tenants
@@ -84,6 +96,33 @@ there to show the leak rate, not as a retrieval baseline.
   row-level security, a vector database's metadata filters, BGE or E5 embeddings, and OPA or an
   IdP as the authority slot in without moving the security boundary.
 
+## Evidence and CI coverage
+
+| Result | Kind of evidence | File | Rerun in CI? |
+|---|---|---|---|
+| Both design tables | seeded synthetic corpus (2 tenants, 72 users, 440 documents), leakage judged against the directory of record | `results/benchmark.json` | Yes: must match exactly |
+| ACLs fail closed; unauthorized text never ranked; revocation, deletion and team moves enforced | unit tests | `tests/` (12 tests) | Yes, on every push |
+| Scores unchanged when another tenant adds documents | unit test | `tests/` | Yes |
+
+## Design trade-offs
+
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| Where to filter | before ranking, on the index's ACL copy | after ranking | Post-filtering leaves 25% of contexts empty (table above). |
+| Freshness | live re-check of every candidate against the directory of record, then refill | trust the index until the next sync | A stale pre-filter leaked on 54% of queries after permission changes; the re-check brings that to 0%. It costs one directory lookup per candidate. |
+| Ranking statistics | BM25 statistics from the caller's authorized view | statistics from the shared index | Shared statistics make scores depend on other tenants' documents, which is a side channel. |
+| Failure mode | deny when the directory cannot be reached | serve from the index | A retrieval system that fails open leaks during outages. |
+
+## Code map
+
+| File | What to look at |
+|---|---|
+| `src/secure_rag/service.py` | `SecureRAGService.query`: pre-filter → hybrid ranking → `live_check` → refill → audit event |
+| `src/secure_rag/models.py` | `authorized()`, the fail-closed ACL rule; `AccessContext`, `Document` |
+| `src/secure_rag/retrieval.py` | `HybridRetriever.search`: BM25 + hashed embeddings over the authorized chunks only |
+| `src/secure_rag/benchmark.py` | the seeded world, the permission changes and the five designs (`_run_design`) |
+| `src/secure_rag/api.py` | FastAPI endpoints for ingest, query and audit |
+
 ## Usage
 
 ```bash
@@ -126,6 +165,20 @@ result = service.query("checkout latency", AccessContext("alice", "acme", frozen
   database that filters during the ANN search, or recall falls the way post-filtering's does here.
 - Chunk text is trusted once authorized. Prompt injection inside authorized documents is out of
   scope.
+
+## Known issues
+
+The retrieval core above is what the benchmark measures. The HTTP layer is a demo and is not yet
+safe to expose:
+
+- **Identity is taken from the request body.** `POST /v1/query` trusts the `user_id`, `tenant_id`
+  and `groups` the client sends. In production they must come from a verified session token.
+  The benchmark and the service's `query()` already take an `AccessContext` built by the caller.
+- **The write and audit endpoints have no access control.** Anyone who can reach the service can
+  ingest documents or read every tenant's audit log.
+- **The live re-check compares ACLs and existence, not content.** A document that was edited
+  after indexing passes the re-check with its old text, because document versions are not
+  compared.
 
 ## License
 
