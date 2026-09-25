@@ -101,7 +101,7 @@ there to show the leak rate, not as a retrieval baseline.
 | Result | Kind of evidence | File | Rerun in CI? |
 |---|---|---|---|
 | Both design tables | seeded synthetic corpus (2 tenants, 72 users, 440 documents), leakage judged against the directory of record | `results/benchmark.json` | Yes: must match exactly |
-| ACLs fail closed; unauthorized text never ranked; revocation, deletion and team moves enforced | unit tests | `tests/` (12 tests) | Yes, on every push |
+| ACLs fail closed; unauthorized text never ranked; revocation, deletion and team moves enforced | unit tests | `tests/` (21 tests) | Yes, on every push |
 | Scores unchanged when another tenant adds documents | unit test | `tests/` | Yes |
 | HTTP identity, roles, tenant isolation and stale-text withholding | API tests with a TestClient | `tests/test_api_security.py`, `tests/test_secure_rag.py` | Yes |
 
